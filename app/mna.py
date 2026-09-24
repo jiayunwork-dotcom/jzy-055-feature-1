@@ -1,9 +1,12 @@
 """修正节点分析（MNA）：矩阵组装与线性求解。
 
-直流工作点与瞬态步进共用这一套组装原语，保证两种分析的元件方程一致：
-- add_conductance：电导（电阻，以及储能元件的伴随电导）；
+直流工作点、瞬态步进、交流频响共用这一套组装原语，保证三种分析的元件方程一致：
+- add_conductance：电导（电阻，以及储能元件的伴随电导或频域复导纳）；
 - add_current_source：独立电流源（以及伴随模型的等效电流源）；
 - add_voltage_source：独立电压源（多引一个支路电流未知量，矩阵扩维）。
+
+默认在实数域组装求解（直流、瞬态）；构造时传 complex_mode=True 则同样的
+盖章逻辑在复数域执行（交流频响：电容导纳 jωC、电感导纳 1/(jωL) 都是复数）。
 
 求解失败（矩阵奇异）时抛出带 MATRIX_SINGULAR 错误码的 CircuitError，
 绝不返回 NaN 或无穷大。
@@ -27,6 +30,17 @@ class MnaSolution:
         return self.node_voltages[node]
 
 
+@dataclass(frozen=True)
+class ComplexMnaSolution:
+    """复数域解（交流频响）：节点电位与支路电流都是复数相量。"""
+
+    node_voltages: dict[str, complex]    # 含接地节点（恒为 0j）
+    branch_currents: dict[str, complex]  # 各电压源支路电流相量
+
+    def voltage(self, node: str) -> complex:
+        return self.node_voltages[node]
+
+
 def _singular_error() -> CircuitError:
     return CircuitError(
         ErrorCode.MATRIX_SINGULAR,
@@ -39,37 +53,43 @@ class MnaBuilder:
     """逐步盖章（stamp）组装 MNA 方程 A·x = z 并求解。
 
     未知量排列：前 n 个为非地节点电压，后 m 个为电压源支路电流。
+    complex_mode=True 时矩阵与右端项用复数组装，返回 ComplexMnaSolution。
     """
 
-    def __init__(self, nodes: tuple[str, ...] | list[str], ground: str):
+    def __init__(self, nodes: tuple[str, ...] | list[str], ground: str, *,
+                 complex_mode: bool = False):
         self._ground = ground
         self._nodes = list(nodes)
         self._index = {node: i for i, node in enumerate(self._nodes)}
-        self._conductances: list[tuple[str, str, float]] = []
-        self._current_sources: list[tuple[str, str, float]] = []
-        self._voltage_sources: list[tuple[str, str, str, float]] = []
+        self._complex = complex_mode
+        self._conductances: list[tuple[str, str, float | complex]] = []
+        self._current_sources: list[tuple[str, str, float | complex]] = []
+        self._voltage_sources: list[tuple[str, str, str, float | complex]] = []
 
-    def add_conductance(self, a: str, b: str, g: float) -> None:
-        """在 a、b 之间并入电导 g（西门子）。"""
+    def add_conductance(self, a: str, b: str, g: float | complex) -> None:
+        """在 a、b 之间并入电导 g（西门子；复数域下即导纳）。"""
         self._conductances.append((a, b, g))
 
-    def add_current_source(self, a: str, b: str, j: float) -> None:
+    def add_current_source(self, a: str, b: str, j: float | complex) -> None:
         """电流源：电流 j 经源从 a 流向 b（向 b 注入、从 a 抽出）。"""
         self._current_sources.append((a, b, j))
 
-    def add_voltage_source(self, name: str, a: str, b: str, e: float) -> None:
+    def add_voltage_source(self, name: str, a: str, b: str, e: float | complex) -> None:
         """电压源：a 为正极、b 为负极，约束 v(a)-v(b)=e，支路电流正方向为从 a 流入。"""
         self._voltage_sources.append((name, a, b, e))
 
-    def solve(self) -> MnaSolution:
+    def solve(self) -> MnaSolution | ComplexMnaSolution:
         n = len(self._nodes)
         m = len(self._voltage_sources)
         size = n + m
         if size == 0:
+            if self._complex:
+                return ComplexMnaSolution(node_voltages={self._ground: 0j}, branch_currents={})
             return MnaSolution(node_voltages={self._ground: 0.0}, branch_currents={})
 
-        A = np.zeros((size, size))
-        z = np.zeros(size)
+        dtype = complex if self._complex else float
+        A = np.zeros((size, size), dtype=dtype)
+        z = np.zeros(size, dtype=dtype)
         idx = self._index.get  # 接地节点不在索引中，返回 None
 
         for a, b, g in self._conductances:
@@ -115,6 +135,16 @@ class MnaBuilder:
         )
         if float(np.abs(residual).max(initial=0.0)) > 1e-6 * scale:
             raise _singular_error()
+
+        if self._complex:
+            cnode_voltages = {node: complex(x[i]) for i, node in enumerate(self._nodes)}
+            cnode_voltages[self._ground] = 0j
+            cbranch_currents = {
+                name: complex(x[n + k])
+                for k, (name, *_rest) in enumerate(self._voltage_sources)
+            }
+            return ComplexMnaSolution(node_voltages=cnode_voltages,
+                                      branch_currents=cbranch_currents)
 
         node_voltages = {node: float(x[i]) for i, node in enumerate(self._nodes)}
         node_voltages[self._ground] = 0.0

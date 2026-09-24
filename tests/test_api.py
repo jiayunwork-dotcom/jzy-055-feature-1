@@ -1,4 +1,4 @@
-"""HTTP 接口端到端行为：健康检查、算例、直流与瞬态的响应形状。"""
+"""HTTP 接口端到端行为：健康检查、算例、直流、瞬态与交流频响的响应形状。"""
 
 import math
 
@@ -90,3 +90,57 @@ def test_error_response_shape():
     body = resp.json()
     assert set(body) == {"code", "message"}
     assert body["code"] == "UNKNOWN_ELEMENT_TYPE"
+
+
+def test_ac_endpoint_happy_path():
+    resp = client.post("/api/ac", json={
+        "netlist": RC,
+        "f_start": 1.0, "f_stop": 1e6,
+        "points_per_decade": 10,
+        "output_node": "out",
+        "input_source": "V1",
+    })
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is True
+    assert body["input_source"] == "V1"
+    assert body["output"] == "v(out)"
+    points = body["points"]
+    assert len(points) == 61  # 6 个十倍频程 × 10 点 + 1
+    assert set(points[0]) == {"frequency", "transfer_real", "transfer_imag",
+                              "magnitude", "magnitude_db", "phase_deg"}
+    # 所有频点的所有数值都必须有限，绝不混入 NaN 或无穷
+    for p in points:
+        assert all(math.isfinite(v) for v in p.values())
+    # 频率在对数轴上均匀分布
+    freqs = [p["frequency"] for p in points]
+    for a, b in zip(freqs, freqs[1:]):
+        assert math.isclose(b / a, 10.0 ** 0.1, rel_tol=1e-9)
+    # RC 低通（fc≈159Hz）：1Hz 处增益约 1、相位约 0；最后两个十倍频程衰减约 20dB
+    assert math.isclose(points[0]["magnitude"], 1.0, rel_tol=1e-4)
+    assert math.isclose(points[0]["phase_deg"], 0.0, abs_tol=0.5)
+    assert math.isclose(points[-1]["magnitude_db"] - points[-11]["magnitude_db"],
+                        -20.0, abs_tol=1e-3)
+    # 复数传递函数与幅度/相位自洽
+    for p in points:
+        assert math.isclose(p["magnitude"],
+                            math.hypot(p["transfer_real"], p["transfer_imag"]),
+                            rel_tol=1e-12)
+
+
+def test_ac_endpoint_with_num_points_and_branch_current():
+    resp = client.post("/api/ac", json={
+        "netlist": DIVIDER,
+        "f_start": 10.0, "f_stop": 1e5,
+        "num_points": 9,
+        "output_branch": "V1",
+        "input_source": "V1",
+    })
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["output"] == "i(V1)"
+    assert len(body["points"]) == 9
+    # 纯电阻网络：支路电流传递函数恒为 −1/(R1+R2)，不随频率变化
+    for p in body["points"]:
+        assert math.isclose(p["magnitude"], 1.0 / 3000.0, rel_tol=1e-12)
+        assert math.isclose(abs(p["phase_deg"]), 180.0, abs_tol=1e-9)

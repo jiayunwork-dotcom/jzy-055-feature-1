@@ -161,3 +161,77 @@ def test_transient_param_errors_via_api():
     check(post_transient(elements, dt=-1e-3, tstop=1.0), "INVALID_TIME_PARAMS")
     check(post_transient(elements, dt=1e-3, tstop=1e-4), "INVALID_TIME_PARAMS")
     check(post_transient(elements, dt=1e-3, tstop=1e-3 * 20001), "TOO_MANY_STEPS")
+
+
+# --- 交流频响 /api/ac 的参数与对象校验 ---------------------------------------
+
+
+def post_ac(**overrides):
+    body = {
+        "netlist": {"elements": [
+            {"name": "V1", "type": "voltage_source", "nodes": ["in", "0"], "value": 5},
+            {"name": "R1", "type": "resistor", "nodes": ["in", "out"], "value": 1000},
+            {"name": "C1", "type": "capacitor", "nodes": ["out", "0"], "value": 1e-6},
+        ]},
+        "f_start": 1.0, "f_stop": 1e6, "num_points": 10,
+        "output_node": "out", "input_source": "V1",
+    }
+    for key, value in overrides.items():
+        if value is None:
+            body.pop(key, None)  # 显式传 None 表示从请求里去掉这个字段
+        else:
+            body[key] = value
+    return client.post("/api/ac", json=body)
+
+
+def test_ac_invalid_frequency_range():
+    check(post_ac(f_start=0.0), "INVALID_SWEEP_PARAMS")
+    check(post_ac(f_start=-10.0), "INVALID_SWEEP_PARAMS")
+    check(post_ac(f_stop=0.5), "INVALID_SWEEP_PARAMS")   # 终止不大于起始
+    check(post_ac(f_start=1e6, f_stop=1e6), "INVALID_SWEEP_PARAMS")
+    check(post_ac(f_start=None), "INVALID_SWEEP_PARAMS")
+    check(post_ac(f_stop=None), "INVALID_SWEEP_PARAMS")
+
+
+def test_ac_invalid_point_count():
+    check(post_ac(num_points=1), "INVALID_SWEEP_PARAMS")   # 少于两点不成曲线
+    check(post_ac(num_points=0), "INVALID_SWEEP_PARAMS")
+    check(post_ac(num_points=10001), "TOO_MANY_SWEEP_POINTS")  # 超过硬上限
+    check(post_ac(num_points=None, points_per_decade=0), "INVALID_SWEEP_PARAMS")
+    check(post_ac(num_points=None, points_per_decade=2000), "TOO_MANY_SWEEP_POINTS")
+
+
+def test_ac_point_spec_must_be_exactly_one():
+    check(post_ac(points_per_decade=10), "INVALID_SWEEP_PARAMS")  # 两种都给
+    check(post_ac(num_points=None), "INVALID_SWEEP_PARAMS")       # 都不给
+
+
+def test_ac_output_object_not_found():
+    check(post_ac(output_node="ghost"), "OUTPUT_NOT_FOUND")
+    # 支路电流输出必须落在电压源上，电阻不行
+    check(post_ac(output_node=None, output_branch="R1"), "OUTPUT_NOT_FOUND")
+    check(post_ac(output_node=None, output_branch="V9"), "OUTPUT_NOT_FOUND")
+
+
+def test_ac_input_source_not_found():
+    check(post_ac(input_source="ghost"), "INPUT_SOURCE_NOT_FOUND")
+    check(post_ac(input_source="R1"), "INPUT_SOURCE_NOT_FOUND")  # 电阻不是独立源
+
+
+def test_ac_output_and_input_must_be_specified():
+    check(post_ac(output_branch="V1"), "MALFORMED_REQUEST")  # 输出给了两个
+    check(post_ac(output_node=None), "MALFORMED_REQUEST")    # 输出一个都没给
+    check(post_ac(input_source=None), "MALFORMED_REQUEST")   # 参照源缺失
+
+
+def test_ac_singular_frequency_point_reports_frequency():
+    # 参照源之外置零后出现悬浮节点（iso 只接被置零的电流源）
+    resp = post_ac(netlist={"elements": [
+        {"name": "V1", "type": "voltage_source", "nodes": ["in", "0"], "value": 5},
+        {"name": "R1", "type": "resistor", "nodes": ["in", "out"], "value": 1000},
+        {"name": "I1", "type": "current_source", "nodes": ["iso", "0"], "value": 1e-3},
+    ]})
+    assert resp.status_code == 400
+    body = resp.json()
+    assert body["code"] == "MATRIX_SINGULAR"
+    assert "Hz" in body["message"]  # 必须说明是哪个频点出的问题
