@@ -1,7 +1,7 @@
 """HTTP 接口层：只做请求转发与结果封装。
 
-解析、矩阵组装、时间步进等全部计算逻辑都在 netlist / mna / dc / transient
-模块中，本层不包含任何电学计算。
+解析、矩阵组装、时间步进、频率扫描等全部计算逻辑都在 netlist / mna / dc /
+transient / ac 模块中，本层不包含任何电学计算。
 """
 
 from __future__ import annotations
@@ -12,19 +12,28 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from .ac import OutputSpec, make_log_sweep, run_ac
 from .dc import solve_dc
 from .errors import CircuitError, ErrorCode
 from .examples import load_examples
 from .netlist import parse_netlist
-from .schemas import DcRequest, DcResponse, TransientRequest, TransientResponse
+from .schemas import (
+    AcPointResponse,
+    AcRequest,
+    AcResponse,
+    DcRequest,
+    DcResponse,
+    TransientRequest,
+    TransientResponse,
+)
 from .transient import INTEGRATION_METHOD, run_transient
 
 logger = logging.getLogger("circuit_sim")
 
 app = FastAPI(
     title="电路仿真服务",
-    version="1.0.0",
-    summary="网表进、波形出：直流工作点 + 后向欧拉瞬态分析",
+    version="1.1.0",
+    summary="网表进、曲线出：直流工作点 + 后向欧拉瞬态 + 交流小信号频响",
 )
 
 
@@ -60,7 +69,7 @@ async def health() -> dict:
 
 @app.get("/api/examples")
 async def examples() -> dict:
-    """返回两个可手算核对的算例（分压网络 + RC 充电），可直接 POST 给计算接口。"""
+    """返回可手算核对的算例（分压网络 + RC 充电 + RC 低通频响），可直接 POST 给计算接口。"""
     return load_examples()
 
 
@@ -92,4 +101,36 @@ async def transient(req: TransientRequest) -> TransientResponse:
         node_voltages=result.node_voltages,
         voltage_source_currents=result.voltage_source_currents,
         inductor_currents=result.inductor_currents,
+    )
+
+
+@app.post("/api/ac", response_model=AcResponse)
+async def ac_frequency_response(req: AcRequest) -> AcResponse:
+    """交流小信号频响：对数频率轴扫描，返回各频点输出相对参照源的传递函数（幅度/相位）。"""
+    circuit = parse_netlist([e.model_dump() for e in req.netlist.elements])
+    frequencies = make_log_sweep(
+        req.sweep.start_hz,
+        req.sweep.stop_hz,
+        num_points=req.sweep.num_points,
+        points_per_decade=req.sweep.points_per_decade,
+    )
+    output = OutputSpec(
+        kind=req.output.kind, node=req.output.node, element=req.output.element
+    )
+    result = run_ac(circuit, frequencies, output, req.input_source)
+    return AcResponse(
+        success=True,
+        input_source=result.input_source,
+        output=req.output,
+        points=[
+            AcPointResponse(
+                frequency_hz=p.frequency_hz,
+                real=p.transfer.real,
+                imag=p.transfer.imag,
+                magnitude=p.magnitude,
+                magnitude_db=p.magnitude_db,
+                phase_deg=p.phase_deg,
+            )
+            for p in result.points
+        ],
     )

@@ -25,6 +25,11 @@ class ErrorCode:
     MATRIX_SINGULAR = "MATRIX_SINGULAR"              # 系数矩阵奇异，无法求解
     INVALID_TIME_PARAMS = "INVALID_TIME_PARAMS"      # dt / tstop 非法
     TOO_MANY_STEPS = "TOO_MANY_STEPS"                # 瞬态步数超过上限
+    INVALID_SWEEP_PARAMS = "INVALID_SWEEP_PARAMS"    # 频率范围 / 扫描取点非法
+    TOO_MANY_POINTS = "TOO_MANY_POINTS"              # 扫描频点数超过上限
+    INVALID_OUTPUT_SPEC = "INVALID_OUTPUT_SPEC"      # 输出指定（类型 / 节点 / 支路）不合法
+    OUTPUT_NOT_FOUND = "OUTPUT_NOT_FOUND"            # 指定的输出节点或支路元件不存在
+    INPUT_SOURCE_NOT_FOUND = "INPUT_SOURCE_NOT_FOUND"  # 参照输入源对不上任何独立源
 
 
 class CircuitError(Exception):

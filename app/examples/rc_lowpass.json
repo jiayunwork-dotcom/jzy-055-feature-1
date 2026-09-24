@@ -1,0 +1,13 @@
+{
+  "description": "RC 一阶低通频响：V1 经 R1=1kΩ、C1=1µF 到地，输出取电容两端电压 out，输入参照 V1。截止频率 fc = 1/(2π·R·C) ≈ 159.155 Hz：该处幅度降到通带的 1/√2 ≈ 0.707（−3.01 dB）、相位 −45°；远高于 fc 每十倍频程衰减 −20 dB，相位趋向 −90°。建议按 suggested_sweep 从 1 Hz 扫到 1 MHz（每十倍频程 20 点）。",
+  "netlist": {
+    "elements": [
+      {"name": "V1", "type": "voltage_source", "nodes": ["in", "0"], "value": 1.0},
+      {"name": "R1", "type": "resistor", "nodes": ["in", "out"], "value": 1000.0},
+      {"name": "C1", "type": "capacitor", "nodes": ["out", "0"], "value": 1e-6}
+    ]
+  },
+  "input_source": "V1",
+  "output": {"kind": "voltage", "node": "out"},
+  "suggested_sweep": {"start_hz": 1.0, "stop_hz": 1000000.0, "points_per_decade": 20}
+}
